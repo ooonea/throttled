@@ -9,12 +9,13 @@ import re
 import struct
 import subprocess
 import sys
+import traceback
 from collections import defaultdict
 from datetime import datetime
 from errno import EACCES, EIO, EPERM
 from platform import uname
 from subprocess import check_output, CalledProcessError
-from threading import Event, Thread
+from threading import Event, Thread, current_thread, main_thread
 from time import time
 
 from mmio import MMIO, MMIOError
@@ -222,6 +223,11 @@ def log(msg, oneshot=False, end='\n'):
 def fatal(msg, code=1, end='\n'):
     outfile = args.log if args.log else sys.stderr
     print(_format('[E] ', msg), file=outfile, end=end)
+    if current_thread() is not main_thread():
+        # sys.exit() would only kill the calling thread, leaving a zombie
+        # daemon that looks healthy to systemd but no longer touches MSRs
+        outfile.flush()
+        os._exit(code)
     sys.exit(code)
 
 
@@ -277,8 +283,9 @@ def writemsr(msr, val):
             raise e
         if e.errno == EPERM or e.errno == EACCES:
             fatal(
-                f'Unable to write to MSR {msr} ({MSR_DICT[msr]:x}). Try to disable Secure Boot '
-                'and check if your kernel does not restrict access to MSR.'
+                f'Unable to write to MSR {msr} ({MSR_DICT[msr]:x}). Check that the msr kernel module '
+                'is loaded with allow_writes=on and that kernel lockdown is disabled (many kernels '
+                'enable lockdown automatically when Secure Boot is on).'
             )
         elif e.errno == EIO:
             fatal(f'Unable to write to MSR {msr} ({MSR_DICT[msr]:x}). Unknown error.')
@@ -321,7 +328,10 @@ def readmsr(msr, from_bit=0, to_bit=63, cpu=None, flatten=False):
         if TESTMSR:
             raise e
         if e.errno == EPERM or e.errno == EACCES:
-            fatal(f'Unable to read from MSR {msr} ({MSR_DICT[msr]:x}). Try to disable Secure Boot.')
+            fatal(
+                f'Unable to read from MSR {msr} ({MSR_DICT[msr]:x}). Check that the msr kernel module '
+                'is loaded and not restricted by kernel lockdown.'
+            )
         elif e.errno == EIO:
             fatal(f'Unable to read to MSR {msr} ({MSR_DICT[msr]:x}). Unknown error.')
         else:
@@ -418,7 +428,10 @@ def handle_ac_properties_changed(if_name, changed, invalidated):
 
 def should_listen_for_resume(config):
     return any(
-        config.getfloat(key, plane, fallback=0) != 0 for plane in VOLTAGE_PLANES for key in UNDERVOLT_KEYS + ICCMAX_KEYS
+        config.getfloat(key, plane, fallback=0) != 0
+        for keys, planes in ((UNDERVOLT_KEYS, VOLTAGE_PLANES), (ICCMAX_KEYS, CURRENT_PLANES))
+        for key in keys
+        for plane in planes
     )
 
 
@@ -532,7 +545,8 @@ def calc_undervolt_msr(plane, offset):
 def calc_undervolt_mv(msr_value):
     """Return the offset voltage (in mV) from the given raw MSR 150h value."""
     offset = (msr_value & 0xFFE00000) >> 21
-    offset = offset if offset <= 0x400 else -(0x800 - offset)
+    # 11-bit two's complement: values >= 0x400 are negative
+    offset = offset if offset < 0x400 else -(0x800 - offset)
     return int(round(offset / 1.024))
 
 
@@ -550,9 +564,10 @@ def get_undervolt(plane=None, convert=False):
     return out
 
 
-def undervolt(config):
+def undervolt(config, source=None):
     """Apply the undervolt offsets from the config to all voltage planes."""
-    section = f"UNDERVOLT.{power['source']}"
+    source = source or power['source']
+    section = f'UNDERVOLT.{source}'
     if (section not in config and 'UNDERVOLT' not in config) or 'UNDERVOLT' in UNSUPPORTED_FEATURES:
         return
     for plane in VOLTAGE_PLANES:
@@ -573,7 +588,8 @@ def calc_icc_max_msr(plane, current):
     """Return the value to be written in the MSR 150h for setting the given
     IccMax (in A) to the given current plane.
     """
-    assert 0 < current <= 0x3FF
+    # the MSR field is 10 bits of 1/4 A steps: max 0x3FF / 4 = 255.75 A
+    assert 0 < current <= 0x3FF / 4
     assert plane in CURRENT_PLANES
     current = int(round(current * 4))
     return 0x8000001700000000 | (CURRENT_PLANES[plane] << 40) | current
@@ -615,14 +631,19 @@ def get_icc_max(plane=None, convert=False):
     return out
 
 
-def set_icc_max(config):
+def set_icc_max(config, source=None):
     """Apply the IccMax limits from the config to all current planes."""
-    section = f"ICCMAX.{power['source']}"
+    source = source or power['source']
+    section = f'ICCMAX.{source}'
     for plane in CURRENT_PLANES:
         try:
             write_current_amp = config.getfloat(
                 section, plane, fallback=config.getfloat('ICCMAX', plane, fallback=-1.0)
             )
+            if write_current_amp <= 0 and any(
+                config.getfloat(key, plane, fallback=-1.0) > 0 for key in ICCMAX_KEYS
+            ):
+                warning(f'IccMax {plane:s} is not configured for the {source:s} profile: leaving it untouched.')
             if write_current_amp > 0:
                 write_value = calc_icc_max_msr(plane, write_current_amp)
                 writemsr('MSR_OC_MAILBOX', write_value)
@@ -669,7 +690,7 @@ def load_config():
     for key in UNDERVOLT_KEYS:
         for plane in VOLTAGE_PLANES:
             if key in config:
-                value = config.getfloat(key, plane)
+                value = config.getfloat(key, plane, fallback=0.0)
                 valid_value = min(0, value)
                 if value != valid_value:
                     config.set(key, plane, str(valid_value))
@@ -701,7 +722,8 @@ def load_config():
             if key in config:
                 try:
                     value = config.getfloat(key, plane)
-                    if value <= 0 or value >= 0x3FF:
+                    # the MSR field holds 10 bits of 1/4 A steps: max 255.75 A
+                    if value <= 0 or value > 0x3FF / 4:
                         raise ValueError
                     iccmax_enabled = True
                 except ValueError:
@@ -738,6 +760,14 @@ def calc_reg_values(platform_info, config):
                     )
                     Trip_Temp_C = valid_trip_temp
                 trip_offset = int(round(critical_temp - Trip_Temp_C))
+                if trip_offset > 63:
+                    # the offset field is 6 bits wide: a larger value would
+                    # spill into adjacent bits and corrupt the register
+                    log(
+                        f'[!] Overriding "Trip_Temp_C" in "{power_source:s}": offset {trip_offset:d} '
+                        f'exceeds the 6-bit MSR field, clamping to {critical_temp - 63:d} C'
+                    )
+                    trip_offset = 63
                 regs[power_source]['MSR_TEMPERATURE_TARGET'] = trip_offset << 24
             else:
                 log(f'[I] {power_source:s} trip temperature is disabled in config.')
@@ -870,6 +900,20 @@ def read_mchbar_base(cpuid):
 
 
 def power_thread(state, exit_event, cpuid):
+    """Crash-loud wrapper for _power_thread: an uncaught exception (or a
+    sys.exit() from a helper) would only kill this thread, leaving a zombie
+    daemon that looks healthy to systemd while no longer touching the hardware.
+    """
+    try:
+        _power_thread(state, exit_event, cpuid)
+    except Exception:
+        warning(f'power thread crashed:\n{traceback.format_exc()}', oneshot=False)
+        if args.log:
+            args.log.flush()
+        os._exit(1)
+
+
+def _power_thread(state, exit_event, cpuid):
     """Daemon main loop: periodically (re-)apply throttling MSRs."""
     config, regs = state['config'], state['regs']
     mchbar_base = read_mchbar_base(cpuid)
@@ -877,10 +921,11 @@ def power_thread(state, exit_event, cpuid):
         mchbar_mmio = MMIO(mchbar_base + 0x599F, 8)
     except MMIOError:
         warning('Unable to open /dev/mem. TDP override might not work correctly.')
-        warning('Try to disable Secure Boot and/or enable CONFIG_DEVMEM in kernel config.')
+        warning('Check CONFIG_DEVMEM=y and that kernel lockdown is disabled (CONFIG_IO_STRICT_DEVMEM can also block this region).')
         mchbar_mmio = None
 
     next_hwp_write = 0
+    applied_source = power['source']
     last_config_write_time = (
         get_config_write_time() if config.getboolean('GENERAL', 'Autoreload', fallback=False) else None
     )
@@ -904,9 +949,26 @@ def power_thread(state, exit_event, cpuid):
         if power['method'] == 'polling':
             power['source'] = 'BATTERY' if is_on_battery(config) else 'AC'
 
+        # snapshot the power source once per iteration: the D-Bus callback can
+        # flip it concurrently and every write below must agree on one profile
+        power_source = power['source']
+
+        # re-apply the one-shot per-profile settings when the power source flips
+        if power_source != applied_source:
+            log(f'[I] Power source changed: {applied_source:s} -> {power_source:s}')
+            undervolt(config, source=power_source)
+            set_icc_max(config, source=power_source)
+            if config.getboolean('AC', 'HWP_Mode', fallback=False):
+                if power_source == 'AC':
+                    next_hwp_write = 0
+                else:
+                    # restore the default energy/performance preference on battery
+                    set_hwp(False)
+            applied_source = power_source
+
         # set temperature trip point
-        if 'MSR_TEMPERATURE_TARGET' in regs[power['source']]:
-            write_value = regs[power['source']]['MSR_TEMPERATURE_TARGET']
+        if 'MSR_TEMPERATURE_TARGET' in regs[power_source]:
+            write_value = regs[power_source]['MSR_TEMPERATURE_TARGET']
             writemsr('MSR_TEMPERATURE_TARGET', write_value)
             if args.debug:
                 read_value = readmsr('MSR_TEMPERATURE_TARGET', 24, 29, flatten=True)
@@ -914,8 +976,8 @@ def power_thread(state, exit_event, cpuid):
                 log(f'[D] TEMPERATURE_TARGET - write {write_value >> 24:#x} - read {read_value:#x} - match {match}')
 
         # set cTDP
-        if 'MSR_CONFIG_TDP_CONTROL' in regs[power['source']]:
-            write_value = regs[power['source']]['MSR_CONFIG_TDP_CONTROL']
+        if 'MSR_CONFIG_TDP_CONTROL' in regs[power_source]:
+            write_value = regs[power_source]['MSR_CONFIG_TDP_CONTROL']
             writemsr('MSR_CONFIG_TDP_CONTROL', write_value)
             if args.debug:
                 read_value = readmsr('MSR_CONFIG_TDP_CONTROL', 0, 1, flatten=True)
@@ -923,8 +985,8 @@ def power_thread(state, exit_event, cpuid):
                 log(f'[D] CONFIG_TDP_CONTROL - write {write_value:#x} - read {read_value:#x} - match {match}')
 
         # set PL1/2 on MSR
-        if 'MSR_PKG_POWER_LIMIT' in regs[power['source']]:
-            write_value = regs[power['source']]['MSR_PKG_POWER_LIMIT']
+        if 'MSR_PKG_POWER_LIMIT' in regs[power_source]:
+            write_value = regs[power_source]['MSR_PKG_POWER_LIMIT']
             writemsr('MSR_PKG_POWER_LIMIT', write_value)
             if args.debug:
                 read_value = readmsr('MSR_PKG_POWER_LIMIT', 0, 55, flatten=True)
@@ -941,14 +1003,14 @@ def power_thread(state, exit_event, cpuid):
                     )
 
         # Disable BDPROCHOT
-        disable_bdprochot = config.getboolean(power['source'], 'Disable_BDPROCHOT', fallback=None)
+        disable_bdprochot = config.getboolean(power_source, 'Disable_BDPROCHOT', fallback=None)
         if disable_bdprochot:
             set_disable_bdprochot()
 
-        wait_t = get_update_rate(config, power['source'])
+        wait_t = get_update_rate(config, power_source)
         enable_hwp_mode = config.getboolean('AC', 'HWP_Mode', fallback=None)
         # set HWP less frequently. Just to be safe since (e.g.) TLP might reset this value
-        if enable_hwp_mode and next_hwp_write <= time() and power['source'] == 'AC':
+        if enable_hwp_mode and next_hwp_write <= time() and power_source == 'AC':
             set_hwp(enable_hwp_mode)
             next_hwp_write = time() + HWP_INTERVAL
 
@@ -959,6 +1021,13 @@ def check_kernel():
     """Verify we run as root and that the kernel exposes MSR/devmem."""
     if os.geteuid() != 0:
         fatal('No root no party. Try again with sudo.')
+
+    try:
+        with open('/sys/kernel/security/lockdown') as f:
+            if '[none]' not in f.read():
+                warning('Kernel lockdown is active: MSR and /dev/mem writes will be blocked.')
+    except OSError:
+        pass
 
     kernel_config = None
     try:
@@ -1048,6 +1117,8 @@ def monitor(exit_event, wait):
     """Live-display throttling causes and per-domain power until exit_event is set."""
     wait = max(0.1, wait)
     rapl_power_unit = 0.5 ** readmsr('MSR_RAPL_POWER_UNIT', from_bit=8, to_bit=12, cpu=0)
+    # the RAPL energy counters are 32 bits wide and wrap every few minutes
+    rapl_counter_range = 2**32 * rapl_power_unit
     power_plane_msr = {
         'Package': 'MSR_INTEL_PKG_ENERGY_STATUS',
         'Graphics': 'MSR_PP1_ENERGY_STATUS',
@@ -1079,10 +1150,9 @@ def monitor(exit_event, wait):
         for power_plane in ('Package', 'Graphics', 'DRAM'):
             energy_j = readmsr(power_plane_msr[power_plane], cpu=0) * rapl_power_unit
             now = time()
-            prev_energy[power_plane], energy_w = (
-                (energy_j, now),
-                (energy_j - prev_energy[power_plane][0]) / (now - prev_energy[power_plane][1]),
-            )
+            prev_j, prev_t = prev_energy[power_plane]
+            energy_w = ((energy_j - prev_j) % rapl_counter_range) / (now - prev_t)
+            prev_energy[power_plane] = (energy_j, now)
             stats2[power_plane] = f'{energy_w:.1f} W'
             total += energy_w
 
@@ -1151,7 +1221,7 @@ def main():
             log(f'[D] cpu platform info: {key.replace("_", " ")} = {value}')
     regs = calc_reg_values(platform_info, config)
 
-    if not config.getboolean('GENERAL', 'Enabled'):
+    if not config.getboolean('GENERAL', 'Enabled', fallback=False):
         log('[I] Throttled is disabled in config file... Quitting. :(')
         return
 
