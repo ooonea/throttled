@@ -17,6 +17,9 @@ from pathlib import Path
 from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[1]
+# throttled.py does `from mmio import MMIO`: the repo root must be importable
+# (pytest adds it for the test suite, standalone use must do it itself)
+sys.path.insert(0, str(ROOT))
 spec = importlib.util.spec_from_file_location('throttled', ROOT / 'throttled.py')
 throttled = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(throttled)
