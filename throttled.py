@@ -14,7 +14,7 @@ from collections import defaultdict
 from datetime import datetime
 from errno import EACCES, EIO, EPERM
 from platform import uname
-from subprocess import check_output, CalledProcessError
+from subprocess import check_output, CalledProcessError, PIPE
 from threading import Event, Thread, current_thread, main_thread
 from time import time
 
@@ -878,8 +878,16 @@ def _read_mchbar_dword(method=None):
     if method:
         cmd[1:1] = ['-A', method]
     try:
-        return int(check_output(cmd), 16)
-    except (CalledProcessError, FileNotFoundError, ValueError):
+        # capture stderr: a probe method is allowed to fail (e.g. the ECAM
+        # region is not mappable under STRICT_DEVMEM) and its complaint must
+        # not leak to the journal; read_mchbar_base() warns if all methods fail
+        return int(check_output(cmd, stderr=PIPE), 16)
+    except CalledProcessError as e:
+        if args.debug:
+            err = e.stderr.decode(errors='replace').strip()
+            log(f'[D] MCHBAR - setpci {method or "default"} probe failed: {err}')
+        return None
+    except (FileNotFoundError, ValueError):
         return None
 
 

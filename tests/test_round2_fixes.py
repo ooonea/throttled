@@ -169,6 +169,32 @@ class Round2FixTests(unittest.TestCase):
 
         os_exit.assert_called_once_with(1)
 
+    def test_mchbar_probe_keeps_setpci_stderr_out_of_the_journal(self):
+        throttled = load_throttled()
+        failure = throttled.CalledProcessError(
+            1, ['setpci'], output=b'', stderr=b'setpci: Cannot map ecam region: Operation not permitted.\n'
+        )
+
+        with mock.patch.object(throttled, 'check_output', side_effect=failure) as check:
+            with mock.patch.object(throttled, 'log') as log:
+                self.assertIsNone(throttled._read_mchbar_dword('ecam'))
+
+        self.assertEqual(check.call_args.kwargs['stderr'], throttled.PIPE)
+        log.assert_not_called()
+
+    def test_mchbar_probe_surfaces_setpci_stderr_in_debug_mode(self):
+        throttled = load_throttled()
+        throttled.args.debug = True
+        failure = throttled.CalledProcessError(
+            1, ['setpci'], output=b'', stderr=b'setpci: Cannot map ecam region: Operation not permitted.\n'
+        )
+
+        with mock.patch.object(throttled, 'check_output', side_effect=failure):
+            with mock.patch.object(throttled, 'log') as log:
+                self.assertIsNone(throttled._read_mchbar_dword('ecam'))
+
+        self.assertIn('Cannot map ecam region', log.call_args.args[0])
+
     def test_power_thread_crash_exits_the_process_for_systemd_to_restart(self):
         throttled = load_throttled()
 
