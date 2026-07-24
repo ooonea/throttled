@@ -53,7 +53,7 @@ class BuildDebTests(unittest.TestCase):
             self.assertIn('Version: 0.12+test', info.stdout)
             self.assertIn('Architecture: all', info.stdout)
             self.assertIn('Maintainer: Tester <test@example.com>', info.stdout)
-            self.assertIn('python3 (>= 3.9), python3-dbus-next, pciutils, kmod, upower, systemd', info.stdout)
+            self.assertIn('python3 (>= 3.9), python3-dbus-fast, pciutils, kmod, upower, systemd', info.stdout)
             self.assertIn('./usr/lib/throttled/throttled.py', contents.stdout)
             self.assertIn('./usr/lib/throttled/mmio.py', contents.stdout)
             self.assertIn('./etc/throttled.conf', contents.stdout)

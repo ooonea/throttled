@@ -5,7 +5,7 @@ umask 022
 PACKAGE=throttled
 ARCHITECTURE=all
 DESCRIPTION="Workaround for Intel throttling issues in Linux."
-DEPENDENCIES="python3 (>= 3.9), python3-dbus-next, pciutils, kmod, upower, systemd"
+DEPENDENCIES="python3 (>= 3.9), python3-dbus-fast, pciutils, kmod, upower, systemd"
 MAINTAINER="throttled maintainers <noreply@example.com>"
 OUTPUT_DIR=dist
 VERSION=

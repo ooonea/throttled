@@ -42,9 +42,9 @@ I have run **[Geekbench 4](https://browser.geekbench.com/v4/cpu/8656840)** and n
 On a lot of modern CPUs from Intel one can configure the TDP up or down based on predefined profiles. This is what this option does. For a i7-8650U normal would be 15W, up profile is setting it to 25W and down to 10W. You can lookup the values of your CPU at the Intel product website.
 
 ## Requirements
-A stripped down version of the python module `python-periphery` is now built-in and it is used for accessing the MCHBAR register by memory mapped I/O. You also need `dbus-next` for listening to DBus signals on resume from sleep/hibernate and power-source changes.
+A stripped down version of the python module `python-periphery` is now built-in and it is used for accessing the MCHBAR register by memory mapped I/O. You also need `dbus-fast` for listening to DBus signals on resume from sleep/hibernate and power-source changes.
 
-Older versions used `dbus-python` together with the `PyGObject`/GLib main loop to dispatch DBus notifications. The current implementation uses `dbus-next` with Python's `asyncio` event loop instead, so the Python GObject/GLib bindings are no longer required. A running system DBus service is still required for UPower and logind signals.
+Older versions used `dbus-python` together with the `PyGObject`/GLib main loop to dispatch DBus notifications. The current implementation uses `dbus-fast` (the actively maintained fork of `dbus-next`, same API) with Python's `asyncio` event loop instead, so the Python GObject/GLib bindings are no longer required. A running system DBus service is still required for UPower and logind signals.
 
 ### Writing to MSR and PCI BAR
 Some time ago a feature called [Kernel Lockdown](https://lwn.net/Articles/706637/) was added to Linux. Kernel Lockdown automatically enables some security measures when Secure Boot is enabled, among them restricted access to MSR and PCI BAR via /dev/mem, which this tool requires. There are two ways to get around this: You can either disable Secure Boot in your firmware settings, or disable the Kernel Lockdown LSM.
