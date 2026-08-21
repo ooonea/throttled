@@ -207,6 +207,8 @@ supported_cpus = {
     (6, 204, 2): 'PantherLake',
 }
 
+FIXED_DRAM_ENERGY_UNIT_MODELS = {63, 79, 85, 86, 87}
+
 # MCHBAR belongs to the PCI host bridge, not to a CPUID signature. This is a
 # deliberately narrow allowlist: an unlisted device remains MSR-only.
 #
@@ -1454,16 +1456,18 @@ def test_msr_rw_capabilities():
         TESTMSR = False
 
 
-def monitor(exit_event, wait):
+def monitor(exit_event, wait, cpuid=None):
     """Live-display throttling causes and per-domain power until exit_event is set."""
     wait = max(0.1, wait)
     prev_energy = {}
     if MONITOR_POWER_DOMAINS:
         rapl_power_unit = 0.5 ** readmsr('MSR_RAPL_POWER_UNIT', from_bit=8, to_bit=12, cpu=0)
         # the RAPL energy counters are 32 bits wide and wrap every few minutes
-        rapl_counter_range = 2**32 * rapl_power_unit
+        energy_units = dict.fromkeys(MONITOR_POWER_DOMAINS, rapl_power_unit)
+        if 'DRAM' in energy_units and cpuid is not None and cpuid[0] == 6 and cpuid[1] in FIXED_DRAM_ENERGY_UNIT_MODELS:
+            energy_units['DRAM'] = 15.3e-6
         prev_energy = {
-            domain: (readmsr(msr, cpu=0) * rapl_power_unit, time())
+            domain: (readmsr(msr, cpu=0) * energy_units[domain], time())
             for domain, msr in MONITOR_POWER_DOMAINS.items()
         }
 
@@ -1491,10 +1495,11 @@ def monitor(exit_event, wait):
         stats2 = {'VCore': f'{vcore:.0f} mV'}
         total = 0.0
         for power_plane, msr in MONITOR_POWER_DOMAINS.items():
-            energy_j = readmsr(msr, cpu=0) * rapl_power_unit
+            energy_unit = energy_units[power_plane]
+            energy_j = readmsr(msr, cpu=0) * energy_unit
             now = time()
             prev_j, prev_t = prev_energy[power_plane]
-            energy_w = ((energy_j - prev_j) % rapl_counter_range) / (now - prev_t)
+            energy_w = ((energy_j - prev_j) % (2**32 * energy_unit)) / (now - prev_t)
             prev_energy[power_plane] = (energy_j, now)
             stats2[power_plane] = f'{energy_w:.1f} W'
             # Package already includes Graphics; DRAM is a separate domain.
@@ -1565,9 +1570,10 @@ def main():
         log('[I] Throttled is disabled in config file... Quitting. :(')
         return
 
+    cpuid = None
     if not args.force:
         check_kernel()
-        check_cpu()
+        cpuid = check_cpu()
 
     set_msr_allow_writes()
 
@@ -1596,7 +1602,7 @@ def main():
 
     monitor_thread = None
     if args.monitor is not None:
-        monitor_thread = Thread(target=monitor, args=(exit_event, args.monitor))
+        monitor_thread = Thread(target=monitor, args=(exit_event, args.monitor, cpuid))
         monitor_thread.daemon = True
         monitor_thread.start()
 

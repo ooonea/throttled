@@ -42,6 +42,27 @@ class ConfigValidationTests(unittest.TestCase):
         self.addCleanup(os.unlink, tmp.name)
         return tmp.name
 
+    def monitor_output(self, throttled, cpuid):
+        energy_values = iter((2**32 - 1_000_000, 1_000_000))
+
+        def readmsr(msr, *args, **kwargs):
+            if msr == 'MSR_RAPL_POWER_UNIT':
+                return 14
+            if msr == 'MSR_DRAM_ENERGY_STATUS':
+                return next(energy_values)
+            return 0
+
+        throttled.MONITOR_POWER_DOMAINS = {'DRAM': 'MSR_DRAM_ENERGY_STATUS'}
+        throttled.UNSUPPORTED_FEATURES.extend(('UNDERVOLT', 'ICCMAX'))
+        with (
+            mock.patch.object(throttled, 'readmsr', side_effect=readmsr),
+            mock.patch.object(throttled, 'time', side_effect=(0, 1)),
+            mock.patch.object(throttled, 'log') as log,
+        ):
+            throttled.monitor(StopAfterWait(), 1, cpuid=cpuid)
+
+        return next(call.args[0] for call in log.call_args_list if 'DRAM:' in call.args[0])
+
     def test_load_config_survives_a_partial_undervolt_section(self):
         throttled = load_throttled()
         throttled.args.config = self.write_config(
@@ -157,6 +178,60 @@ class ConfigValidationTests(unittest.TestCase):
         self.assertIn('Graphics: 10.0 W', output)
         self.assertIn('DRAM: 20.0 W', output)
         self.assertIn('Total: 35.0 W', output)
+
+    def test_monitor_selects_dram_energy_unit_by_cpu_model(self):
+        cases = (
+            ('model 63', (6, 63, 2), 30.6),
+            ('model 79', (6, 79, 1), 30.6),
+            ('model 85', (6, 85, 4), 30.6),
+            ('model 87', (6, 87, 1), 30.6),
+            ('Broadwell-DE', (6, 86, 2), 30.6),
+            ('force', None, 122.1),
+        )
+
+        for name, cpuid, expected_watts in cases:
+            with self.subTest(name=name):
+                throttled = load_throttled()
+                output = self.monitor_output(throttled, cpuid)
+
+                self.assertIn(f'DRAM: {expected_watts:.1f} W', output)
+
+    def test_main_passes_checked_cpuid_to_monitor_thread(self):
+        throttled = load_throttled()
+        config = throttled.configparser.ConfigParser()
+        config.read_dict({'GENERAL': {'Enabled': 'True'}, 'AC': {'Update_Rate_s': '5'}})
+        parsed_args = SimpleNamespace(
+            log=None,
+            debug=False,
+            config='/tmp/throttled.conf',
+            monitor=0.5,
+            force=False,
+        )
+        parser = mock.Mock()
+        parser.parse_args.return_value = parsed_args
+        cpuid = (6, 85, 4)
+
+        with (
+            mock.patch.object(throttled, 'build_arg_parser', return_value=parser),
+            mock.patch.object(throttled, 'load_config', return_value=config),
+            mock.patch.object(throttled, 'check_kernel'),
+            mock.patch.object(throttled, 'check_cpu', return_value=cpuid),
+            mock.patch.object(throttled, 'set_msr_allow_writes'),
+            mock.patch.object(throttled, 'test_msr_rw_capabilities'),
+            mock.patch.object(throttled, 'is_on_battery', return_value=False),
+            mock.patch.object(throttled, 'get_cpu_platform_info', return_value={}),
+            mock.patch.object(throttled, 'calc_reg_values', return_value={}),
+            mock.patch.object(throttled, 'undervolt'),
+            mock.patch.object(throttled, 'set_icc_max'),
+            mock.patch.object(throttled, 'set_hwp'),
+            mock.patch.object(throttled, 'log'),
+            mock.patch.object(throttled, 'Thread') as thread,
+            mock.patch.object(throttled, 'run_dbus_loop', new=mock.Mock(return_value=object())),
+            mock.patch.object(throttled.asyncio, 'run'),
+        ):
+            throttled.main()
+
+        thread.assert_any_call(target=throttled.monitor, args=(mock.ANY, 0.5, cpuid))
 
     def test_load_config_disables_malformed_power_limits(self):
         throttled = load_throttled()
