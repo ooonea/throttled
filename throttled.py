@@ -1084,6 +1084,10 @@ def set_hwp(performance_mode):
             log(f'[D] HWP CPU {cpu:d} - write "{hwp_mode:#02x}" - read "{read_value:#02x}" - match {match}')
 
 
+def _hwp_mode(config):
+    return config.getboolean('AC', 'HWP_Mode', fallback=None) and power['source'] == 'AC'
+
+
 def set_disable_bdprochot():
     """Clear bit 0 of MSR_POWER_CTL to disable BDPROCHOT."""
     cur_val = readmsr('MSR_POWER_CTL', flatten=True)
@@ -1113,7 +1117,7 @@ def reload_config():
     regs = calc_reg_values(get_cpu_platform_info(), config)
     undervolt(config)
     set_icc_max(config)
-    set_hwp(config.getboolean('AC', 'HWP_Mode', fallback=None))
+    set_hwp(_hwp_mode(config))
     log('[I] Reloading changes.')
     return config, regs
 
@@ -1567,7 +1571,7 @@ def main():
 
     undervolt(config)
     set_icc_max(config)
-    set_hwp(config.getboolean('AC', 'HWP_Mode', fallback=None))
+    set_hwp(_hwp_mode(config))
 
     state = {'config': config, 'regs': regs}
 
