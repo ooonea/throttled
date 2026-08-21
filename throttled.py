@@ -663,6 +663,8 @@ def _encode_pkg_power_limit(pl1, tw1, pl2, tw2):
     for name, value, mask in fields:
         if not isinstance(value, int) or not 0 <= value <= mask:
             raise ValueError(f'{name:s} value {value!r} does not fit its {mask.bit_length():d}-bit field.')
+        if name in ('PL1', 'PL2') and value == 0:
+            raise ValueError(f'{name:s} must be at least one power-unit tick, got {value!r}.')
         encoded[name] = value
     return (
         encoded['PL1']

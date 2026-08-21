@@ -89,8 +89,13 @@ class MsrEncodingTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(ValueError, 'PL1'):
             throttled._encode_pkg_power_limit(0x8000, 0, 1, 0)
+        with self.assertRaisesRegex(ValueError, 'PL1 must be at least one power-unit tick'):
+            throttled._encode_pkg_power_limit(0, 0, 1, 0)
         with self.assertRaisesRegex(ValueError, 'PL2'):
             throttled._encode_pkg_power_limit(1, 0, 0x8000, 0)
+        with self.assertRaisesRegex(ValueError, 'PL2 must be at least one power-unit tick'):
+            throttled._encode_pkg_power_limit(1, 0, 0, 0)
+        throttled._encode_pkg_power_limit(1, 0, 1, 0)
 
     def test_calculated_package_power_limit_rejects_unencodable_wattage(self):
         throttled = load_throttled()
