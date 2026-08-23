@@ -185,6 +185,80 @@ class ConfigValidationTests(unittest.TestCase):
 
         self.assertIn('must be a finite number', stderr.getvalue())
 
+    def test_load_config_rejects_malformed_control_booleans(self):
+        cases = (
+            ('GENERAL', 'Enabled'),
+            ('GENERAL', 'Autoreload'),
+            ('AC', 'HWP_Mode'),
+            ('AC', 'Disable_BDPROCHOT'),
+            ('BATTERY', 'Disable_BDPROCHOT'),
+        )
+
+        for section, option in cases:
+            with self.subTest(section=section, option=option):
+                throttled = load_throttled()
+                throttled.args.config = self.write_config(
+                    '[GENERAL]\n'
+                    f'Enabled: {"invalid" if option == "Enabled" else "True"}\n'
+                    f'Autoreload: {"invalid" if option == "Autoreload" else "False"}\n'
+                    '[AC]\nUpdate_Rate_s: 5\n'
+                    f'HWP_Mode: {"invalid" if option == "HWP_Mode" else "False"}\n'
+                    f'Disable_BDPROCHOT: {"invalid" if section == "AC" and option == "Disable_BDPROCHOT" else "False"}\n'
+                    '[BATTERY]\nUpdate_Rate_s: 5\n'
+                    f'Disable_BDPROCHOT: {"invalid" if section == "BATTERY" else "False"}\n'
+                )
+                stderr = io.StringIO()
+
+                with redirect_stderr(stderr), self.assertRaises(SystemExit):
+                    throttled.load_config()
+
+                message = stderr.getvalue()
+                self.assertIn(option, message)
+                self.assertIn(f'[{section}]', message)
+
+    def test_load_config_rejects_an_inherited_malformed_boolean(self):
+        throttled = load_throttled()
+        throttled.args.config = self.write_config(
+            '[DEFAULT]\nHWP_Mode: invalid\n'
+            '[GENERAL]\nEnabled: yes\nAutoreload: no\n'
+            '[AC]\nUpdate_Rate_s: 5\n'
+        )
+        stderr = io.StringIO()
+
+        with redirect_stderr(stderr), self.assertRaises(SystemExit):
+            throttled.load_config()
+
+        self.assertIn('HWP_Mode', stderr.getvalue())
+        self.assertIn('[AC]', stderr.getvalue())
+
+    def test_load_config_accepts_supported_boolean_spellings(self):
+        throttled = load_throttled()
+        throttled.args.config = self.write_config(
+            '[GENERAL]\nEnabled: yes\nAutoreload: off\n'
+            '[AC]\nUpdate_Rate_s: 5\nHWP_Mode: on\nDisable_BDPROCHOT: 0\n'
+            '[BATTERY]\nUpdate_Rate_s: 5\nDisable_BDPROCHOT: 1\n'
+        )
+
+        config = throttled.load_config()
+
+        self.assertTrue(config.getboolean('GENERAL', 'Enabled'))
+        self.assertFalse(config.getboolean('GENERAL', 'Autoreload'))
+        self.assertTrue(config.getboolean('AC', 'HWP_Mode'))
+        self.assertFalse(config.getboolean('AC', 'Disable_BDPROCHOT'))
+        self.assertTrue(config.getboolean('BATTERY', 'Disable_BDPROCHOT'))
+
+    def test_load_config_accepts_a_battery_only_profile(self):
+        throttled = load_throttled()
+        throttled.args.config = self.write_config(
+            '[GENERAL]\nEnabled: true\nAutoreload: false\n'
+            '[BATTERY]\nUpdate_Rate_s: 5\nDisable_BDPROCHOT: false\n'
+        )
+
+        config = throttled.load_config()
+
+        self.assertNotIn('AC', config)
+        self.assertIn('BATTERY', config)
+
     def test_monitor_skips_only_the_undervolt_read_when_undervolt_is_unsupported(self):
         throttled = load_throttled()
         throttled.UNSUPPORTED_FEATURES.append('UNDERVOLT')

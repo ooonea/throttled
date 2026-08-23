@@ -840,6 +840,14 @@ def load_config():
     if not power_profiles:
         fatal('At least one power profile ([AC] or [BATTERY]) is required.')
 
+    boolean_options = [('GENERAL', 'Enabled'), ('GENERAL', 'Autoreload'), ('AC', 'HWP_Mode')]
+    boolean_options.extend((profile, 'Disable_BDPROCHOT') for profile in power_profiles)
+    for section, option in boolean_options:
+        try:
+            config.getboolean(section, option, fallback=None)
+        except (ValueError, configparser.InterpolationError):
+            fatal(f'The "{option:s}" parameter in [{section:s}] must be a boolean.')
+
     # config values sanity check
     for power_source in power_profiles:
         for option in ('Update_Rate_s', 'PL1_Tdp_W', 'PL1_Duration_s', 'PL2_Tdp_W', 'PL2_Duration_S'):
