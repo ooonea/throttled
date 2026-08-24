@@ -545,6 +545,8 @@ def should_listen_for_resume(config):
 
 
 async def setup_dbus_signal_handlers(config_or_state):
+    from dbus_fast import DBusError, ErrorType
+
     config = _current_config(config_or_state)
     MessageBus, BusType = get_dbus_fast()
     bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
@@ -557,8 +559,17 @@ async def setup_dbus_signal_handlers(config_or_state):
         context['upower'] = upower
         context['upower_properties'] = upower_properties
 
-        if should_listen_for_resume(config):
-            login1_introspection = await bus.introspect(LOGIN1_SERVICE, LOGIN1_PATH)
+        resume_required = should_listen_for_resume(config)
+        if resume_required or (
+            config_is_enabled(config) and config.getboolean('GENERAL', 'Autoreload', fallback=False)
+        ):
+            try:
+                login1_introspection = await bus.introspect(LOGIN1_SERVICE, LOGIN1_PATH)
+            except DBusError as e:
+                if e.type != ErrorType.SERVICE_UNKNOWN.value or resume_required:
+                    raise
+                warning('login1 is unavailable; resume-time reapplication is disabled.')
+                return context
             login1 = bus.get_proxy_object(LOGIN1_SERVICE, LOGIN1_PATH, login1_introspection)
             login1_manager = login1.get_interface(LOGIN1_MANAGER_INTERFACE)
             login1_manager.on_prepare_for_sleep(lambda sleeping: handle_sleep_prepare(sleeping, config_or_state))

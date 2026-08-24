@@ -4,6 +4,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from dbus_fast import DBusError, ErrorType
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -60,6 +62,26 @@ class DBusHelperTests(unittest.TestCase):
         config = throttled.configparser.ConfigParser()
 
         self.assertIs(throttled.should_listen_for_resume(config), False)
+
+    def test_autoreload_starts_without_login1(self):
+        throttled = load_throttled()
+        config = throttled.configparser.ConfigParser()
+        config.read_dict({'GENERAL': {'Enabled': 'True', 'Autoreload': 'True'}})
+        bus = mock.Mock()
+        bus.introspect = mock.AsyncMock(
+            side_effect=[object(), DBusError(ErrorType.SERVICE_UNKNOWN, 'login1 is unavailable')]
+        )
+        message_bus = mock.Mock()
+        message_bus.return_value.connect = mock.AsyncMock(return_value=bus)
+        bus_type = mock.Mock(SYSTEM=object())
+
+        with mock.patch.object(throttled, 'get_dbus_fast', return_value=(message_bus, bus_type)):
+            with mock.patch.object(throttled, 'warning') as warning:
+                context = asyncio.run(throttled.setup_dbus_signal_handlers(config))
+
+        self.assertIn('upower', context)
+        warning.assert_called_once_with('login1 is unavailable; resume-time reapplication is disabled.')
+        bus.disconnect.assert_not_called()
 
 
 class DBusLoopTests(unittest.IsolatedAsyncioTestCase):
