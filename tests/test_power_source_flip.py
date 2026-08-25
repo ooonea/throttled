@@ -41,6 +41,18 @@ class StopAfterWait:
 
 
 class PowerSourceFlipTests(unittest.TestCase):
+    def test_hwp_mode_respects_power_source(self):
+        throttled = load_throttled()
+        for source, options, expected in (
+            ('AC', {'HWP_Mode': True}, True),
+            ('BATTERY', {'HWP_Mode': True}, False),
+            ('AC', {'HWP_Mode': False}, False),
+            ('AC', {}, None),
+        ):
+            with self.subTest(source=source, options=options):
+                throttled.power['source'] = source
+                self.assertIs(throttled._hwp_mode(make_config({'AC': options})), expected)
+
     def test_resume_listener_checks_the_planes_each_key_actually_supports(self):
         throttled = load_throttled()
 
