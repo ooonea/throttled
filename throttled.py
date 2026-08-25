@@ -204,6 +204,7 @@ supported_cpus = {
     (6, 189, 1): 'LunarLake',
     (6, 190, 0): 'AlderLake-N',
     (6, 198, 2): 'ArrowLake-HX',
+    (6, 204, 2): 'PantherLake',
 }
 
 # MCHBAR belongs to the PCI host bridge, not to a CPUID signature. This is a

@@ -21,6 +21,7 @@ class SupportedCPUTests(unittest.TestCase):
             (6, 181, 0),   # #385 Intel Core Ultra 7 265U
             (6, 190, 0),   # #362/#392 Intel N100 / i3-N305
             (6, 198, 2),   # #382/#393 Intel Core Ultra 9 275HX / Ultra 7 255HX
+            (6, 204, 2),   # #401 Intel Core Ultra X7 358H
         }
 
         missing = reported_cpu_ids - set(throttled.supported_cpus)
