@@ -357,6 +357,53 @@ class ConfigValidationTests(unittest.TestCase):
         self.assertNotIn('UNDERVOLT', throttled.UNSUPPORTED_FEATURES)
         self.assertIn('ICCMAX', throttled.UNSUPPORTED_FEATURES)
 
+    def test_probe_omits_an_unreadable_monitor_power_domain(self):
+        throttled = load_throttled()
+        throttled.args.monitor = 1
+
+        def readmsr(msr, *args, **kwargs):
+            if msr == 'MSR_PP1_ENERGY_STATUS':
+                raise OSError
+            return 0
+
+        with mock.patch.object(throttled, 'get_undervolt', return_value={}):
+            with mock.patch.object(throttled, 'get_icc_max', return_value={}):
+                with mock.patch.object(throttled, 'readmsr', side_effect=readmsr):
+                    with mock.patch.object(throttled, 'writemsr'):
+                        with mock.patch.object(throttled, 'warning'):
+                            with mock.patch.object(throttled, 'log'):
+                                throttled.test_msr_rw_capabilities()
+
+        self.assertNotIn('Graphics', throttled.MONITOR_POWER_DOMAINS)
+        self.assertIn('Package', throttled.MONITOR_POWER_DOMAINS)
+        self.assertIn('DRAM', throttled.MONITOR_POWER_DOMAINS)
+
+        throttled.UNSUPPORTED_FEATURES.extend(('UNDERVOLT', 'ICCMAX'))
+        with (
+            mock.patch.object(throttled, 'readmsr', side_effect=readmsr),
+            mock.patch.object(throttled, 'log'),
+        ):
+            throttled.monitor(StopAfterWait(), 1)
+
+    def test_monitor_without_power_domains_skips_the_rapl_unit(self):
+        throttled = load_throttled()
+        forbidden_msrs = {'MSR_RAPL_POWER_UNIT', *throttled.MONITOR_POWER_DOMAINS.values()}
+        throttled.MONITOR_POWER_DOMAINS.clear()
+        throttled.UNSUPPORTED_FEATURES.extend(('UNDERVOLT', 'ICCMAX'))
+
+        def readmsr(msr, *args, **kwargs):
+            self.assertNotIn(msr, forbidden_msrs)
+            return 0
+
+        with (
+            mock.patch.object(throttled, 'readmsr', side_effect=readmsr),
+            mock.patch.object(throttled, 'log') as log,
+        ):
+            throttled.monitor(StopAfterWait(), 1)
+
+        output = next(call.args[0] for call in log.call_args_list if 'VCore:' in call.args[0])
+        self.assertIn('Total: 0.0 W', output)
+
     def test_set_icc_max_skips_the_mailbox_when_iccmax_is_unsupported(self):
         throttled = load_throttled()
         throttled.UNSUPPORTED_FEATURES.append('ICCMAX')

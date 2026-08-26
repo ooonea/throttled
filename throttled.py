@@ -258,6 +258,11 @@ MCHBAR_ADDRESS_MASKS_BY_PCI_DEVICE = {
 
 TESTMSR = False
 UNSUPPORTED_FEATURES = []
+MONITOR_POWER_DOMAINS = {
+    'Package': 'MSR_INTEL_PKG_ENERGY_STATUS',
+    'Graphics': 'MSR_PP1_ENERGY_STATUS',
+    'DRAM': 'MSR_DRAM_ENERGY_STATUS',
+}
 
 
 class bcolors:
@@ -1412,7 +1417,7 @@ def check_cpu():
 
 
 def test_msr_rw_capabilities():
-    """Probe undervolt, IccMax and HWP support; mark unavailable features as such."""
+    """Probe optional MSR features and mark unavailable ones as such."""
     global TESTMSR
     TESTMSR = True
     try:
@@ -1437,6 +1442,14 @@ def test_msr_rw_capabilities():
         except (IOError, OSError):
             warning('HWP seems not to be supported by your system, disabling.')
             UNSUPPORTED_FEATURES.append('HWP')
+
+        if args.monitor is not None:
+            for domain, msr in tuple(MONITOR_POWER_DOMAINS.items()):
+                try:
+                    readmsr(msr, cpu=0)
+                except (IOError, OSError):
+                    warning(f'{domain:s} power monitoring is not supported by your system, disabling.')
+                    del MONITOR_POWER_DOMAINS[domain]
     finally:
         TESTMSR = False
 
@@ -1444,19 +1457,15 @@ def test_msr_rw_capabilities():
 def monitor(exit_event, wait):
     """Live-display throttling causes and per-domain power until exit_event is set."""
     wait = max(0.1, wait)
-    rapl_power_unit = 0.5 ** readmsr('MSR_RAPL_POWER_UNIT', from_bit=8, to_bit=12, cpu=0)
-    # the RAPL energy counters are 32 bits wide and wrap every few minutes
-    rapl_counter_range = 2**32 * rapl_power_unit
-    power_plane_msr = {
-        'Package': 'MSR_INTEL_PKG_ENERGY_STATUS',
-        'Graphics': 'MSR_PP1_ENERGY_STATUS',
-        'DRAM': 'MSR_DRAM_ENERGY_STATUS',
-    }
-    prev_energy = {
-        'Package': (readmsr('MSR_INTEL_PKG_ENERGY_STATUS', cpu=0) * rapl_power_unit, time()),
-        'Graphics': (readmsr('MSR_PP1_ENERGY_STATUS', cpu=0) * rapl_power_unit, time()),
-        'DRAM': (readmsr('MSR_DRAM_ENERGY_STATUS', cpu=0) * rapl_power_unit, time()),
-    }
+    prev_energy = {}
+    if MONITOR_POWER_DOMAINS:
+        rapl_power_unit = 0.5 ** readmsr('MSR_RAPL_POWER_UNIT', from_bit=8, to_bit=12, cpu=0)
+        # the RAPL energy counters are 32 bits wide and wrap every few minutes
+        rapl_counter_range = 2**32 * rapl_power_unit
+        prev_energy = {
+            domain: (readmsr(msr, cpu=0) * rapl_power_unit, time())
+            for domain, msr in MONITOR_POWER_DOMAINS.items()
+        }
 
     if 'UNDERVOLT' in UNSUPPORTED_FEATURES:
         log('[D] Undervolt offsets: unsupported')
@@ -1481,8 +1490,8 @@ def monitor(exit_event, wait):
         vcore = readmsr('IA32_PERF_STATUS', from_bit=32, to_bit=47, cpu=0) / (2.0**13) * 1000
         stats2 = {'VCore': f'{vcore:.0f} mV'}
         total = 0.0
-        for power_plane in ('Package', 'Graphics', 'DRAM'):
-            energy_j = readmsr(power_plane_msr[power_plane], cpu=0) * rapl_power_unit
+        for power_plane, msr in MONITOR_POWER_DOMAINS.items():
+            energy_j = readmsr(msr, cpu=0) * rapl_power_unit
             now = time()
             prev_j, prev_t = prev_energy[power_plane]
             energy_w = ((energy_j - prev_j) % rapl_counter_range) / (now - prev_t)
